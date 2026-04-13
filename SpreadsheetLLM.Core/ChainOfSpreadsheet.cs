@@ -246,7 +246,7 @@ QUESTION:
 
         private static string? FindRelevantSheet(SpreadsheetEncoding encoding, string query)
         {
-            var queryTokens = query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var queryTokens = query.ToLowerInvariant().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             int bestScore = 0;
             string? bestSheet = null;
 
