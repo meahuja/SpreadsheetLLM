@@ -131,10 +131,12 @@ namespace SpreadsheetLLM.Core
                 var style = cell.Style;
                 fontBold = style.Font.Bold;
                 fontItalic = style.Font.Italic;
-                fontColor = style.Font.FontColor.IsEmpty ? null : style.Font.FontColor.ToString();
+                // XLColor has no IsEmpty; just capture the string and let the
+                // catch block handle any access failure.
+                fontColor = style.Font.FontColor.ToString();
                 borderBottom = style.Border.BottomBorder.ToString();
                 fillPattern = style.Fill.PatternType.ToString();
-                fillFg = style.Fill.PatternColor.IsEmpty ? null : style.Fill.PatternColor.ToString();
+                fillFg = style.Fill.PatternColor.ToString();
                 alignH = style.Alignment.Horizontal.ToString();
             }
             catch

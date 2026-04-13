@@ -47,9 +47,13 @@ namespace SpreadsheetLLM.Core
             {
                 if (IsEmptySheet(sheet)) continue;
 
-                // Original token count
-                var originalCells = CollectAllCells(sheet);
-                int originalTokens = TokenCount(originalCells);
+                // Original token count — use the vanilla (row-major) encoding as the
+                // baseline, matching the paper's comparison.  A raw cell dict would
+                // undercount the real cost of sending the uncompressed sheet to an LLM.
+                var vanillaEncoding = VanillaEncoder.Encode(new[] { sheet });
+                int originalTokens = vanillaEncoding.TryGetValue(sheet.Name, out var vanillaText)
+                    ? vanillaText.Length
+                    : 0;
 
                 // Stage 1: Structural-Anchor-Based Extraction
                 var (rowAnchors, colAnchors) = FindStructuralAnchors(sheet, k);
@@ -92,6 +96,8 @@ namespace SpreadsheetLLM.Core
                     Formats = aggregatedFormats,
                     NumericRanges = numericRanges,
                 };
+                // Measure the SheetEncoding (cells + formats + anchors) — this is what
+                // actually gets sent to the LLM and is the fair comparison against vanilla.
                 int finalTokens = TokenCount(sheetEncoding);
 
                 result.Sheets[sheet.Name] = sheetEncoding;
