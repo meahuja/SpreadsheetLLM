@@ -118,6 +118,156 @@ namespace SpreadsheetLLM.Core
         }
 
         // =====================================================================
+        // Stage-by-stage public API (for manual comparison / debugging)
+        // =====================================================================
+
+        /// <summary>
+        /// Stage 1 only — returns the structural anchor rows and columns selected for each sheet.
+        /// Use this to inspect which rows/columns the anchor algorithm considers "important"
+        /// without running the full inverted-index or format-aggregation steps.
+        /// </summary>
+        public Dictionary<string, StructuralAnchors> FindAnchorsOnly(string filePath, int k = 2)
+        {
+            var sheets = ExcelReader.ReadWorkbook(filePath);
+            var result = new Dictionary<string, StructuralAnchors>();
+            foreach (var sheet in sheets)
+            {
+                if (IsEmptySheet(sheet)) continue;
+                var (rowAnchors, colAnchors) = FindStructuralAnchors(sheet, k);
+                result[sheet.Name] = new StructuralAnchors
+                {
+                    Rows = rowAnchors.OrderBy(r => r).ToList(),
+                    Columns = colAnchors.OrderBy(c => c).Select(c => CellUtils.ColumnLetter(c)).ToList()
+                };
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Stages 1 + 2 — structural anchors applied, then inverted-index built.
+        /// Format aggregation (Stage 3) is NOT run.
+        /// Returns a SpreadsheetEncoding where StructuralAnchors and Cells are populated
+        /// but Formats and NumericRanges are empty dictionaries.
+        /// </summary>
+        public SpreadsheetEncoding EncodeStage1And2(string filePath, int k = 2)
+        {
+            var sheets = ExcelReader.ReadWorkbook(filePath);
+            return EncodeStage1And2(sheets, Path.GetFileName(filePath), k);
+        }
+
+        /// <summary>Overload accepting pre-loaded snapshots.</summary>
+        public SpreadsheetEncoding EncodeStage1And2(WorksheetSnapshot[] sheets, string fileName, int k = 2)
+        {
+            var result = new SpreadsheetEncoding { FileName = fileName };
+            int totalOriginal = 0, totalFinal = 0;
+
+            foreach (var sheet in sheets)
+            {
+                if (IsEmptySheet(sheet)) continue;
+
+                var vanillaEncoding = VanillaEncoder.Encode(new[] { sheet });
+                int originalTokens = vanillaEncoding.TryGetValue(sheet.Name, out var vt) ? vt.Length : 0;
+
+                // Stage 1
+                var (rowAnchors, colAnchors) = FindStructuralAnchors(sheet, k);
+                var (keptRows, keptCols) = ExpandAnchors(rowAnchors, colAnchors, sheet.MaxRow, sheet.MaxColumn, k);
+                (keptRows, keptCols) = CompressHomogeneousRegions(sheet, keptRows, keptCols);
+
+                // Stage 2
+                var (invertedIndex, _) = CreateInvertedIndex(sheet, keptRows, keptCols);
+                var mergedIndex = CreateInvertedIndexTranslation(invertedIndex);
+                int finalTokens = TokenCount(mergedIndex);
+
+                result.Sheets[sheet.Name] = new SheetEncoding
+                {
+                    StructuralAnchors = new StructuralAnchors
+                    {
+                        Rows = rowAnchors.OrderBy(r => r).ToList(),
+                        Columns = colAnchors.OrderBy(c => c).Select(c => CellUtils.ColumnLetter(c)).ToList()
+                    },
+                    Cells = mergedIndex,
+                    Formats = new Dictionary<string, List<string>>(),
+                    NumericRanges = new Dictionary<string, List<string>>()
+                };
+
+                totalOriginal += originalTokens;
+                totalFinal += finalTokens;
+            }
+
+            result.CompressionMetrics = new CompressionMetricsContainer
+            {
+                Overall = new SheetMetrics
+                {
+                    OriginalTokens = totalOriginal,
+                    FinalTokens = totalFinal,
+                    OverallRatio = CompressionRatio(totalOriginal, totalFinal)
+                }
+            };
+            return result;
+        }
+
+        /// <summary>
+        /// Stage 2 only — builds an inverted index over ALL cells in the sheet
+        /// (no anchor filtering, no format aggregation).
+        /// Use this as a baseline to compare against the full 3-stage pipeline.
+        /// Returns a SpreadsheetEncoding where only Cells is populated;
+        /// StructuralAnchors, Formats, and NumericRanges are all empty.
+        /// </summary>
+        public SpreadsheetEncoding EncodeInvertedIndexOnly(string filePath)
+        {
+            var sheets = ExcelReader.ReadWorkbook(filePath);
+            return EncodeInvertedIndexOnly(sheets, Path.GetFileName(filePath));
+        }
+
+        /// <summary>Overload accepting pre-loaded snapshots.</summary>
+        public SpreadsheetEncoding EncodeInvertedIndexOnly(WorksheetSnapshot[] sheets, string fileName)
+        {
+            var result = new SpreadsheetEncoding { FileName = fileName };
+            int totalOriginal = 0, totalFinal = 0;
+
+            foreach (var sheet in sheets)
+            {
+                if (IsEmptySheet(sheet)) continue;
+
+                var vanillaEncoding = VanillaEncoder.Encode(new[] { sheet });
+                int originalTokens = vanillaEncoding.TryGetValue(sheet.Name, out var vt) ? vt.Length : 0;
+
+                // All rows and columns — no anchor filtering
+                var allRows = new List<int>();
+                var allCols = new List<int>();
+                for (int r = 1; r <= sheet.MaxRow; r++) allRows.Add(r);
+                for (int c = 1; c <= sheet.MaxColumn; c++) allCols.Add(c);
+
+                // Stage 2 on all cells
+                var (invertedIndex, _) = CreateInvertedIndex(sheet, allRows, allCols);
+                var mergedIndex = CreateInvertedIndexTranslation(invertedIndex);
+                int finalTokens = TokenCount(mergedIndex);
+
+                result.Sheets[sheet.Name] = new SheetEncoding
+                {
+                    StructuralAnchors = new StructuralAnchors(),
+                    Cells = mergedIndex,
+                    Formats = new Dictionary<string, List<string>>(),
+                    NumericRanges = new Dictionary<string, List<string>>()
+                };
+
+                totalOriginal += originalTokens;
+                totalFinal += finalTokens;
+            }
+
+            result.CompressionMetrics = new CompressionMetricsContainer
+            {
+                Overall = new SheetMetrics
+                {
+                    OriginalTokens = totalOriginal,
+                    FinalTokens = totalFinal,
+                    OverallRatio = CompressionRatio(totalOriginal, totalFinal)
+                }
+            };
+            return result;
+        }
+
+        // =====================================================================
         // Stage 1: Structural-Anchor-Based Extraction
         // =====================================================================
 
