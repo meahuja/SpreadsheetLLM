@@ -62,7 +62,16 @@ static class Program
         RunTest("Sales 500 rows",        CreateRealisticSalesSheet);
         RunTest("HR Payroll 300 rows",   CreateRealisticHRSheet);
 
-        // Also encode the existing sample if present
+        // Task 3 — plain_adjacent recreated in .NET
+        RunTest("Plain adjacent (recreated)", CreatePlainAdjacent);
+
+        // Task 2 — messy 2000-row sheet
+        RunTest("Messy 2000 rows",       CreateMessy2000);
+
+        // Task 4 — Large adjacent report: generates TWO json files for comparison
+        RunAdjacentReportTest();
+
+        // Also encode the existing plain_adjacent.xlsx sample if present
         var samplePath = Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..", "plain_adjacent.xlsx");
         samplePath = Path.GetFullPath(samplePath);
@@ -185,6 +194,70 @@ static class Program
         {
             throw new AssertionException($"unparseable range '{r}' in [{sheet}].{section}");
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Task 4 — Two-file output for the large adjacent report
+    // File 1: LargeAdjacentReport_Full.json         — all 3 stages applied
+    // File 2: LargeAdjacentReport_InvertedIndexOnly.json — Stage 2 only (all cells, no anchors, no formats)
+    // -------------------------------------------------------------------------
+    static void RunAdjacentReportTest()
+    {
+        const string name = "Large adjacent report (3 tables, no gaps)";
+        Console.Write($"  [{name}] ... ");
+        var wb = new XLWorkbook();
+        try
+        {
+            CreateLargeAdjacentReport(wb);
+            var xlsxPath = Path.Combine(OutDir, "LargeAdjacentReport.xlsx");
+            wb.SaveAs(xlsxPath);
+
+            var compressor = new SheetCompressor();
+
+            // --- File 1: Full pipeline (all 3 stages) ---
+            var fullEncoding = compressor.Encode(xlsxPath);
+            var fullJson     = JsonSerializer.Serialize(fullEncoding, JsonOpts);
+            var fullPath     = Path.Combine(OutDir, "LargeAdjacentReport_Full.json");
+            File.WriteAllText(fullPath, fullJson);
+
+            // --- File 2: Inverted index only (Stage 2, all cells, no anchor filter, no formats) ---
+            var idxOnlyEncoding = compressor.EncodeInvertedIndexOnly(xlsxPath);
+            var idxOnlyJson     = JsonSerializer.Serialize(idxOnlyEncoding, JsonOpts);
+            var idxOnlyPath     = Path.Combine(OutDir, "LargeAdjacentReport_InvertedIndexOnly.json");
+            File.WriteAllText(idxOnlyPath, idxOnlyJson);
+
+            // Basic assertions on the full encoding
+            Assert(fullEncoding != null,                    "full encoding is null");
+            Assert(fullEncoding!.Sheets.Count > 0,          "no sheets in full encoding");
+            Assert(fullEncoding.CompressionMetrics != null, "metrics is null");
+
+            // Basic assertions on the index-only encoding
+            Assert(idxOnlyEncoding != null,              "index-only encoding is null");
+            Assert(idxOnlyEncoding!.Sheets.Count > 0,    "no sheets in index-only encoding");
+            foreach (var (_, sheet) in idxOnlyEncoding.Sheets)
+            {
+                Assert(sheet.Cells != null,                         "index-only Cells is null");
+                Assert(sheet.Formats.Count == 0,                    "index-only Formats should be empty");
+                Assert(sheet.StructuralAnchors.Rows.Count == 0,     "index-only Anchors.Rows should be empty");
+            }
+
+            var m = fullEncoding.CompressionMetrics!.Overall;
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine(
+                $"PASS  (full: orig={m.OriginalTokens} final={m.FinalTokens} ratio={m.OverallRatio:F2}x)");
+            Console.ResetColor();
+            Console.WriteLine($"        Full encoding   → {fullPath}");
+            Console.WriteLine($"        InvIndex only   → {idxOnlyPath}");
+            _pass++;
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"FAIL: {ex.GetType().Name}: {ex.Message}");
+            Console.ResetColor();
+            _fail++;
+        }
+        finally { wb.Dispose(); }
     }
 
     static string Sanitize(string s) => s.Replace(' ', '_').Replace('/', '_').Replace('(', '_').Replace(')', '_');
@@ -573,6 +646,278 @@ static class Program
             ws.Cell(row, 10).Style.NumberFormat.Format = "$#,##0";
             ws.Cell(row, 11).Value = statuses[rng.Next(statuses.Length)];
             ws.Cell(row, 12).Value = managers[rng.Next(managers.Length)];
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Task 3 — plain_adjacent.xlsx recreated in .NET
+    // Two tables placed directly adjacent (no gap row) — the same structure as
+    // the plain_adjacent.xlsx sample file that ships with the project.
+    // -------------------------------------------------------------------------
+
+    /// Recreates plain_adjacent.xlsx: two tables back-to-back with no gap row.
+    /// Table 1 (rows 1-6): Fruit price/stock inventory with formulas.
+    /// Table 2 (rows 7-12): Student scores with averages.
+    static void CreatePlainAdjacent(XLWorkbook wb)
+    {
+        var ws = wb.Worksheets.Add("Sheet1");
+
+        // ---- Table 1: Fruit inventory (rows 1-6) ----
+        ws.Cell(1, 1).Value = "Fruit";       ws.Cell(1, 1).Style.Font.Bold = true;
+        ws.Cell(1, 2).Value = "Price";       ws.Cell(1, 2).Style.Font.Bold = true;
+        ws.Cell(1, 3).Value = "Stock";       ws.Cell(1, 3).Style.Font.Bold = true;
+        ws.Cell(1, 4).Value = "Total Value"; ws.Cell(1, 4).Style.Font.Bold = true;
+
+        var fruits = new (string name, double price, int stock)[]
+        {
+            ("Apple",  1.50, 200),
+            ("Banana", 0.75, 350),
+            ("Cherry", 3.00, 100),
+            ("Mango",  2.25, 150),
+        };
+        for (int i = 0; i < fruits.Length; i++)
+        {
+            int row = i + 2;
+            ws.Cell(row, 1).Value = fruits[i].name;
+            ws.Cell(row, 2).Value = fruits[i].price;
+            ws.Cell(row, 3).Value = fruits[i].stock;
+            ws.Cell(row, 4).FormulaA1 = $"B{row}*C{row}";
+        }
+        // Summary row (row 6) — no gap, immediately follows data
+        ws.Cell(6, 1).Value = "Total";
+        ws.Cell(6, 2).FormulaA1 = "AVERAGE(B2:B5)";
+        ws.Cell(6, 3).FormulaA1 = "SUM(C2:C5)";
+        ws.Cell(6, 4).FormulaA1 = "SUM(D2:D5)";
+
+        // ---- Table 2: Student scores (rows 7-12) — no gap row ----
+        ws.Cell(7, 1).Value = "Student"; ws.Cell(7, 1).Style.Font.Bold = true;
+        ws.Cell(7, 2).Value = "Math";    ws.Cell(7, 2).Style.Font.Bold = true;
+        ws.Cell(7, 3).Value = "Science"; ws.Cell(7, 3).Style.Font.Bold = true;
+        ws.Cell(7, 4).Value = "Average"; ws.Cell(7, 4).Style.Font.Bold = true;
+
+        var students = new (string name, int math, int science)[]
+        {
+            ("John", 85, 92),
+            ("Sara", 78, 88),
+            ("Mike", 92, 76),
+            ("Lisa", 95, 98),
+        };
+        for (int i = 0; i < students.Length; i++)
+        {
+            int row = i + 8;
+            ws.Cell(row, 1).Value = students[i].name;
+            ws.Cell(row, 2).Value = students[i].math;
+            ws.Cell(row, 3).Value = students[i].science;
+            ws.Cell(row, 4).FormulaA1 = $"AVERAGE(B{row}:C{row})";
+        }
+        // Summary row (row 12)
+        ws.Cell(12, 1).Value = "Class Avg";
+        ws.Cell(12, 2).FormulaA1 = "AVERAGE(B8:B11)";
+        ws.Cell(12, 3).FormulaA1 = "AVERAGE(C8:C11)";
+        ws.Cell(12, 4).FormulaA1 = "AVERAGE(D8:D11)";
+    }
+
+    // -------------------------------------------------------------------------
+    // Task 2 — Messy 2000-row sheet
+    // Tests how the pipeline handles: large data, missing cells, sub-headers
+    // inserted mid-table, mixed numeric/text in the same column, and sparse areas.
+    // -------------------------------------------------------------------------
+
+    /// 2000-row "messy" data-entry sheet with irregular structure.
+    /// Columns: RecordID, Date, Category, SubCategory, Amount, Notes, Status, Flag
+    /// Every 250 rows a sub-header summary row is inserted (tests anchor detection).
+    /// ~20% of cells are intentionally empty. Amount column has mixed types.
+    static void CreateMessy2000(XLWorkbook wb)
+    {
+        var ws = wb.Worksheets.Add("Messy2000");
+        var rng = new Random(13);
+
+        string[] headers = { "RecordID", "Date", "Category", "SubCategory", "Amount", "Notes", "Status", "Flag" };
+        for (int c = 0; c < headers.Length; c++)
+        {
+            ws.Cell(1, c + 1).Value = headers[c];
+            ws.Cell(1, c + 1).Style.Font.Bold = true;
+            ws.Cell(1, c + 1).Style.Fill.BackgroundColor = XLColor.LightYellow;
+        }
+
+        var categories    = new[] { "Revenue", "Expense", "Transfer", "Adjustment", "Refund" };
+        var subCategories = new[] { "Direct", "Indirect", "Internal", "External", "Capital" };
+        var statuses      = new[] { "Approved", "Approved", "Approved", "Pending", "Rejected", "On Hold" };
+        var flags         = new[] { "Y", "N", "Y", "Y", "" }; // weighted, some empty
+
+        var startDate = new DateTime(2020, 1, 1);
+        int dataRow   = 2;    // tracks actual Excel row number
+        int recordId  = 1;
+
+        for (int batch = 0; batch < 8; batch++)
+        {
+            // Insert a section sub-header every 250 records (tests mid-table boundary detection)
+            if (batch > 0)
+            {
+                ws.Cell(dataRow, 1).Value = $"--- Section {batch + 1} ---";
+                ws.Cell(dataRow, 1).Style.Font.Bold = true;
+                ws.Cell(dataRow, 1).Style.Font.Italic = true;
+                ws.Cell(dataRow, 1).Style.Fill.BackgroundColor = XLColor.LightCyan;
+                dataRow++;
+            }
+
+            for (int i = 0; i < 250; i++)
+            {
+                int catIdx = rng.Next(categories.Length);
+                bool skipDate   = rng.Next(5) == 0;   // ~20% missing
+                bool skipSub    = rng.Next(5) == 0;
+                bool skipNotes  = rng.Next(3) == 0;   // ~33% missing notes
+                bool skipFlag   = rng.Next(4) == 0;
+
+                ws.Cell(dataRow, 1).Value = recordId++;
+
+                if (!skipDate)
+                {
+                    ws.Cell(dataRow, 2).Value = startDate.AddDays(rng.Next(1460));
+                    ws.Cell(dataRow, 2).Style.NumberFormat.Format = "yyyy-mm-dd";
+                }
+
+                ws.Cell(dataRow, 3).Value = categories[catIdx];
+
+                if (!skipSub)
+                    ws.Cell(dataRow, 4).Value = subCategories[rng.Next(subCategories.Length)];
+
+                // Amount: mostly numeric, but ~5% are text like "N/A" or "TBD" (messy!)
+                if (rng.Next(20) == 0)
+                    ws.Cell(dataRow, 5).Value = rng.Next(2) == 0 ? "N/A" : "TBD";
+                else
+                {
+                    ws.Cell(dataRow, 5).Value = Math.Round(rng.NextDouble() * 50000, 2);
+                    ws.Cell(dataRow, 5).Style.NumberFormat.Format = "$#,##0.00";
+                }
+
+                if (!skipNotes)
+                    ws.Cell(dataRow, 6).Value = $"Note-{rng.Next(1, 500)}";
+
+                ws.Cell(dataRow, 7).Value = statuses[rng.Next(statuses.Length)];
+
+                if (!skipFlag)
+                    ws.Cell(dataRow, 8).Value = flags[rng.Next(flags.Length)];
+
+                dataRow++;
+            }
+        }
+
+        // Footer summary row
+        ws.Cell(dataRow, 1).Value = "TOTAL RECORDS";
+        ws.Cell(dataRow, 1).Style.Font.Bold = true;
+        ws.Cell(dataRow, 2).Value = recordId - 1;
+        ws.Cell(dataRow, 2).Style.Font.Bold = true;
+    }
+
+    // -------------------------------------------------------------------------
+    // Task 4 — Large adjacent report (3 tables, ~500 rows, NO gap rows)
+    // The three tables sit back-to-back in the same sheet with no empty row
+    // between them. This is a realistic layout for management reports.
+    //
+    // Table 1 (rows   1-151): Product Catalog  — 1 header + 150 products
+    // Table 2 (rows 152-251): Sales Rep Quotas — 1 header + 100 reps
+    // Table 3 (rows 252-501): Customer Orders  — 1 header + 250 orders
+    // Total: 503 rows (≈ 500)
+    // -------------------------------------------------------------------------
+
+    /// Large sheet with 3 back-to-back tables and no gap rows between them.
+    static void CreateLargeAdjacentReport(XLWorkbook wb)
+    {
+        var ws  = wb.Worksheets.Add("AdjacentReport");
+        var rng = new Random(55);
+
+        // ---- Table 1: Product Catalog (rows 1-151) ----
+        string[] prodHeaders = { "ProductID", "ProductName", "Category", "UnitPrice", "StockQty", "ReorderPoint" };
+        for (int c = 0; c < prodHeaders.Length; c++)
+        {
+            ws.Cell(1, c + 1).Value = prodHeaders[c];
+            ws.Cell(1, c + 1).Style.Font.Bold = true;
+            ws.Cell(1, c + 1).Style.Fill.BackgroundColor = XLColor.LightBlue;
+        }
+
+        var prodCategories = new[] { "Electronics", "Apparel", "Home", "Sports", "Books" };
+        var prodNames      = new[] { "Widget", "Gadget", "Gizmo", "Doohickey", "Thingamajig",
+                                     "Contraption", "Device", "Module", "Component", "Unit" };
+
+        for (int i = 0; i < 150; i++)
+        {
+            int row = i + 2;
+            int cat = rng.Next(prodCategories.Length);
+            ws.Cell(row, 1).Value = 1000 + i;
+            ws.Cell(row, 2).Value = $"{prodNames[rng.Next(prodNames.Length)]}-{rng.Next(100, 999)}";
+            ws.Cell(row, 3).Value = prodCategories[cat];
+            ws.Cell(row, 4).Value = Math.Round(5.0 + rng.NextDouble() * 495, 2);
+            ws.Cell(row, 4).Style.NumberFormat.Format = "$#,##0.00";
+            ws.Cell(row, 5).Value = rng.Next(0, 500);
+            ws.Cell(row, 6).Value = rng.Next(10, 100);
+        }
+
+        // ---- Table 2: Sales Rep Quotas (rows 152-251 — no gap) ----
+        string[] repHeaders = { "RepID", "RepName", "Territory", "AnnualQuota", "Q1Target", "Q2Target", "Q3Target", "Q4Target" };
+        for (int c = 0; c < repHeaders.Length; c++)
+        {
+            ws.Cell(152, c + 1).Value = repHeaders[c];
+            ws.Cell(152, c + 1).Style.Font.Bold = true;
+            ws.Cell(152, c + 1).Style.Fill.BackgroundColor = XLColor.LightGreen;
+        }
+
+        var territories = new[] { "North", "South", "East", "West", "Central", "Northeast", "Southwest" };
+        var repFirstNames = new[] { "Alice", "Bob", "Carol", "David", "Eva", "Frank", "Grace", "Henry" };
+        var repLastNames  = new[] { "Smith", "Jones", "White", "Brown", "Green", "Hall", "Lee", "King" };
+
+        for (int i = 0; i < 100; i++)
+        {
+            int row = i + 153;
+            int quota = (rng.Next(5, 20)) * 10000;
+            ws.Cell(row, 1).Value = 2000 + i;
+            ws.Cell(row, 2).Value = $"{repFirstNames[rng.Next(repFirstNames.Length)]} {repLastNames[rng.Next(repLastNames.Length)]}";
+            ws.Cell(row, 3).Value = territories[rng.Next(territories.Length)];
+            ws.Cell(row, 4).Value = quota;
+            ws.Cell(row, 4).Style.NumberFormat.Format = "$#,##0";
+            ws.Cell(row, 5).Value = (int)(quota * 0.25);
+            ws.Cell(row, 5).Style.NumberFormat.Format = "$#,##0";
+            ws.Cell(row, 6).Value = (int)(quota * 0.25);
+            ws.Cell(row, 6).Style.NumberFormat.Format = "$#,##0";
+            ws.Cell(row, 7).Value = (int)(quota * 0.25);
+            ws.Cell(row, 7).Style.NumberFormat.Format = "$#,##0";
+            ws.Cell(row, 8).Value = (int)(quota * 0.25);
+            ws.Cell(row, 8).Style.NumberFormat.Format = "$#,##0";
+        }
+
+        // ---- Table 3: Customer Orders (rows 252-501 — no gap) ----
+        string[] orderHeaders = { "OrderID", "OrderDate", "CustomerName", "Product", "Qty", "UnitPrice", "Total", "Status" };
+        for (int c = 0; c < orderHeaders.Length; c++)
+        {
+            ws.Cell(252, c + 1).Value = orderHeaders[c];
+            ws.Cell(252, c + 1).Style.Font.Bold = true;
+            ws.Cell(252, c + 1).Style.Fill.BackgroundColor = XLColor.LightSalmon;
+        }
+
+        var customers     = new[] { "Acme Corp", "Globex", "Initech", "Umbrella Ltd", "Stark Industries",
+                                    "Wayne Enterprises", "Cyberdyne", "Oscorp", "Massive Dynamic", "Hooli" };
+        var orderStatuses = new[] { "Shipped", "Shipped", "Shipped", "Processing", "Pending", "Cancelled" };
+        var orderDate     = new DateTime(2024, 1, 1);
+
+        for (int i = 0; i < 250; i++)
+        {
+            int row       = i + 253;
+            int prodIdx   = rng.Next(150);          // reference a product from Table 1
+            double price  = Math.Round(5.0 + rng.NextDouble() * 495, 2);
+            int qty       = rng.Next(1, 100);
+            double total  = Math.Round(price * qty, 2);
+
+            ws.Cell(row, 1).Value = 5000 + i;
+            ws.Cell(row, 2).Value = orderDate.AddDays(rng.Next(365));
+            ws.Cell(row, 2).Style.NumberFormat.Format = "yyyy-mm-dd";
+            ws.Cell(row, 3).Value = customers[rng.Next(customers.Length)];
+            ws.Cell(row, 4).Value = $"Product-{1000 + prodIdx}";
+            ws.Cell(row, 5).Value = qty;
+            ws.Cell(row, 6).Value = price;
+            ws.Cell(row, 6).Style.NumberFormat.Format = "$#,##0.00";
+            ws.Cell(row, 7).Value = total;
+            ws.Cell(row, 7).Style.NumberFormat.Format = "$#,##0.00";
+            ws.Cell(row, 8).Value = orderStatuses[rng.Next(orderStatuses.Length)];
         }
     }
 }
